@@ -1,4 +1,4 @@
-# clone a project from a public github urlbut while /
+# clone a project of medium size from a public github urlbut while /
 
 import subprocess
 import os
