@@ -6,3 +6,5 @@ python-dotenv
 passlib
 python-jose
 python-dotenv
+passlib[bcrypt]==4.0.1
+python-jose
