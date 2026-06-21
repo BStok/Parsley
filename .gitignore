@@ -1,3 +1,21 @@
 .env
 
+# Build outputs
+dist/
+build/
+out/
+.next/
+.nuxt/
+
 builds/
+
+parsenv/
+.parsvenv/
+env/
+
+__pycache__/
+*.pyc
+.env
+*.egg-info/
+dist/
+build/
