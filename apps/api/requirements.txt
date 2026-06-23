@@ -3,8 +3,6 @@ uvicorn
 sqlalchemy
 psycopg2-binary
 python-dotenv
-passlib
-python-jose
-python-dotenv
-passlib[bcrypt]==4.0.1
-python-jose
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]
+python-multipart

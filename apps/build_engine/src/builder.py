@@ -8,13 +8,27 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
-SUPPORTED_FRAMEWORKS = {"react", "express", "fastapi", "flask", "static"}
+SUPPORTED_FRAMEWORKS = {
+    "react",
+    "vue",
+    "next",
+    "nuxt",
+    "express",
+    "fastapi",
+    "flask",
+    "django",
+    "static",
+}
 
 TEMPLATE_MAP = {
     "react": "react-vite.dockerfile",
+    "vue": "vue.dockerfile",
+    "next": "next.dockerfile",
+    "nuxt": "nuxt.dockerfile",
     "express": "express.dockerfile",
     "fastapi": "fastapi.dockerfile",
     "flask": "flask.dockerfile",
+    "django": "django.dockerfile",
     "static": "static.dockerfile",
 }
 
@@ -89,6 +103,12 @@ def _port(value: Any) -> int:
 def _default_start_command(framework: str, port: int) -> str:
     if framework == "react":
         return f"serve -s dist -l {port}"
+    if framework == "vue":
+        return f"serve -s dist -l {port}"
+    if framework == "next":
+        return f"npx next start -p {port} -H 0.0.0.0"
+    if framework == "nuxt":
+        return f"npx nuxi preview --host 0.0.0.0 --port {port}"
     if framework == "static":
         return f"python -m http.server {port} --bind 0.0.0.0"
     if framework == "express":
@@ -97,6 +117,8 @@ def _default_start_command(framework: str, port: int) -> str:
         return f"uvicorn main:app --host 0.0.0.0 --port {port}"
     if framework == "flask":
         return f"flask run --host 0.0.0.0 --port {port}"
+    if framework == "django":
+        return f"python manage.py runserver 0.0.0.0:{port}"
     raise ValueError(f"Unsupported framework: {framework}")
 
 
@@ -107,18 +129,18 @@ def _render_template(template_text: str, framework: str, detection: Mapping[str,
         detection.get("build_command")
         or {
             "react": "npm run build",
+            "vue": "npm run build",
+            "next": "npm run build",
+            "nuxt": "npm run build",
             "express": "npm install",
             "fastapi": "pip install --no-cache-dir -r requirements.txt",
             "flask": "pip install --no-cache-dir -r requirements.txt",
+            "django": "pip install --no-cache-dir -r requirements.txt",
             "static": "true",
         }[framework]
     )
 
-    start_command = (
-        f"serve -s dist -l {port}"
-        if framework == "react"
-        else str(detection.get("start_command") or _default_start_command(framework, port))
-    )
+    start_command = str(detection.get("start_command") or _default_start_command(framework, port))
 
     rendered = (
         template_text.replace("{{PORT}}", str(port))
