@@ -1,6 +1,6 @@
-from clone import clone_repo
-from detect import detect
-from builder import build
+from apps.build_engine.src.clone import clone_repo
+from apps.build_engine.src.detect import detect
+from apps.build_engine.src.builder import build
 import shutil
 import os
 import stat

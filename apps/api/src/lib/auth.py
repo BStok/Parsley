@@ -8,8 +8,8 @@ from datetime import datetime, timedelta
 import os
 import uuid
 
-from src.db.database import get_db
-from src.db.models import User
+from apps.api.src.db.database import get_db
+from apps.api.src.db.models import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
