@@ -3,10 +3,19 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import uuid
 
-from src.db.database import get_db
-from src.db.models import Project, User
-from src.lib.auth import get_current_user
-from src.services.build_service import trigger_build
+from apps.api.src.db.database import get_db
+from apps.api.src.db.models import Project, User
+from apps.api.src.lib.auth import get_current_user
+
+import threading
+import sys
+import os
+
+from apps.build_engine.src.index import run_pipeline
+from apps.api.src.db.database import get_db
+from apps.api.src.db.models import Project, User
+from apps.api.src.lib.auth import get_current_user
+from apps.api.src.services.build_service import trigger_build
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
