@@ -11,19 +11,22 @@ def remove_readonly(func, path, _):
     func(path)
 
 
-def run_pipeline(project_id: str, repo_url: str, docker_username: str) -> dict:
+def run_pipeline(project_id: str, repo_url: str, docker_username: str, log_callback=None) -> dict:
     repo_path = None
 
     try:
-        print(f"[1/3] Cloning {repo_url}...")
+        if log_callback:
+            log_callback(f"[1/3] Cloning {repo_url}...")
         repo_path = clone_repo(project_id, repo_url)
 
-        print("[2/3] Detecting framework...")
+        if log_callback:
+            log_callback("[2/3] Detecting framework...")
         detected = detect(repo_path)
 
         print(f"      → {detected['framework']} on port {detected['port']}")
 
-        print("[3/3] Building and pushing image...")
+        if log_callback:
+            log_callback("[3/3] Building and pushing image...")
 
         image_repository = f"{docker_username}/{project_id}"
 
@@ -32,6 +35,7 @@ def run_pipeline(project_id: str, repo_url: str, docker_username: str) -> dict:
             detection=detected,
             image_repository=image_repository,
             tag="latest",
+            log_callback=log_callback,
         )
 
         print(f"      → pushed {build_result['image']}")

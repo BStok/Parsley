@@ -6,3 +6,4 @@ python-dotenv
 passlib[bcrypt]==1.7.4
 python-jose[cryptography]
 python-multipart
+paramiko

@@ -2,20 +2,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import uuid
-
-from apps.api.src.db.database import get_db
-from apps.api.src.db.models import Project, User
-from apps.api.src.lib.auth import get_current_user
-
 import threading
-import sys
 import os
+from datetime import datetime
 
-from apps.build_engine.src.index import run_pipeline
-from apps.api.src.db.database import get_db
-from apps.api.src.db.models import Project, User
+from apps.api.src.db.database import get_db, SessionLocal
+from apps.api.src.db.models import Project, Build, User
 from apps.api.src.lib.auth import get_current_user
-from apps.api.src.services.build_service import trigger_build
+from apps.api.src.lib.log_store import append_log
+from apps.build_engine.src.index import run_pipeline
+from apps.api.src.services.deploy_service import deploy_to_vps
+from apps.api.src.db.models import Deployment
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -64,31 +61,93 @@ def deploy_project(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    project = (
-        db.query(Project)
-        .filter(
-            Project.project_id == project_id,
-            Project.user_id == current_user.user_id,
-        )
-        .first()
-    )
+    project = db.query(Project).filter(
+        Project.project_id == project_id,
+        Project.user_id == current_user.user_id,
+    ).first()
 
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    if project.status == "building":
+        raise HTTPException(status_code=409, detail="Build already in progress")
 
+    # create build record
+    build = Build(
+        build_id=str(uuid.uuid4()),
+        project_id=project.project_id,
+        status="queued",
+        created_at=datetime.utcnow(),
+    )
+    db.add(build)
     project.status = "building"
     db.commit()
 
-    try:
-        result = trigger_build(project)
-        project.status = "deployed"
-        db.commit()
-        return {
-            "project_id": project.project_id,
-            "status": project.status,
-            "result": result,
-        }
-    except Exception as exc:
-        project.status = "failed"
-        db.commit()
-        raise HTTPException(status_code=500, detail=f"Build failed: {exc}")
+    build_id = build.build_id
+    repo_url = project.repo_url
+    p_id = project.project_id
+
+    def run_build():
+        # use a new DB session — the request session closes after response
+        db2 = SessionLocal()
+        try:
+            build_record = db2.query(Build).filter(Build.build_id == build_id).first()
+            project_record = db2.query(Project).filter(Project.project_id == p_id).first()
+
+            build_record.status = "building"
+            build_record.started_at = datetime.utcnow()
+            db2.commit()
+
+            result = run_pipeline(
+                project_id=p_id,
+                repo_url=repo_url,
+                docker_username=os.getenv("DOCKERHUB_USERNAME"),
+                log_callback=lambda line: append_log(build_id, line),  # ← here
+            )
+
+            container_name = deploy_to_vps(
+                project_id=p_id,
+                subdomain=project_record.subdomain,
+                image_tag=result["image_tag"],
+                port=result["port"],
+            )
+
+            deployment = Deployment(
+                deployment_id=str(uuid.uuid4()),
+                project_id=p_id,
+                build_id=build_id,
+                container_id=container_name,
+                status="running",
+                deployed_at=datetime.utcnow(),
+            )
+            db2.add(deployment)
+            db2.commit()
+
+            build_record.status = "success"
+            build_record.image_tag = result["image_tag"]
+            build_record.finished_at = datetime.utcnow()
+            project_record.status = "running"
+            project_record.framework = result["framework"]
+            project_record.port = result["port"]
+            project_record.start_command = result["start_command"]
+            db2.commit()
+
+        except Exception as e:
+            print(f"BUILD THREAD ERROR: {e}")
+            build_record.status = "failed"
+            build_record.finished_at = datetime.utcnow()
+            project_record.status = "failed"
+            db2.commit()
+            append_log(build_id, f"ERROR: {e}")
+
+        finally:
+            append_log(build_id, "__done__")  # ← signals WebSocket to close
+            db2.close()
+
+    thread = threading.Thread(target=run_build)
+    thread.start()
+
+    return {
+        "build_id": build_id,
+        "status": "queued",
+        "message": "Build started"
+    }

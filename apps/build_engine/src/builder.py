@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Generator
 
 SUPPORTED_FRAMEWORKS = {
     "react",
@@ -170,6 +170,7 @@ def _copy_repo(repo_path: Path, build_dir: Path) -> None:
 
 
 def _run(cmd: list[str], cwd: Path | None = None) -> None:
+    """For non-streaming commands like docker push."""
     try:
         subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True, capture_output=True, text=True)
     except FileNotFoundError as exc:
@@ -183,11 +184,34 @@ def _run(cmd: list[str], cwd: Path | None = None) -> None:
         raise BuildError("\n\n".join(msg)) from exc
 
 
+def _run_stream(cmd: list[str], cwd: Path | None = None) -> Generator[str, None, None]:
+    """For streaming commands like docker build — yields lines as they arrive."""
+    try:
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(cwd) if cwd else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+    except FileNotFoundError as exc:
+        raise BuildError(f"Required executable not found: {cmd[0]}") from exc
+
+    for line in process.stdout:
+        yield line.rstrip()
+
+    process.wait()
+    if process.returncode != 0:
+        raise BuildError(f"Command failed with exit code {process.returncode}: {' '.join(cmd)}")
+
+
 def build(
     repo_path: str | Path,
     detection: Mapping[str, Any],
     image_repository: str | None = None,
     tag: str = "latest",
+    log_callback=None,
 ) -> dict[str, Any]:
     if not isinstance(detection, Mapping):
         raise TypeError("detection must be a mapping")
@@ -217,7 +241,10 @@ def build(
         rendered, port, build_command, start_command = _render_template(template_text, framework, detection)
         (build_dir / "Dockerfile").write_text(rendered, encoding="utf-8")
 
-        _run(["docker", "build", "-t", image, "."], cwd=build_dir)
+        for line in _run_stream(["docker", "build", "-t", image, "."], cwd=build_dir):
+            if log_callback:
+                log_callback(line)
+        # _run(["docker", "build", "-t", image, "."], cwd=build_dir)
         _run(["docker", "push", image])
 
     return {
