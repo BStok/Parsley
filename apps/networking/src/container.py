@@ -95,6 +95,7 @@ def redeploy(
     try:
         previous_container = _client.containers.get(container_name)
         previous_container.rename(old_container_name)
+        previous_container.stop()
 
     except NotFound:
         previous_container = None
@@ -102,12 +103,27 @@ def redeploy(
     #
     # Start the new deployment.
     #
-    new_container_id = run_container(
-        image=image,
-        container_name=container_name,
-        port=port,
-        env_vars=env_vars,
-    )
+    try:
+        new_container_id = run_container(
+            image=image,
+            container_name=container_name,
+            port=port,
+            env_vars=env_vars,
+        )
+
+    except Exception:
+        if previous_container is not None:
+            # Remove the failed replacement container if Docker created it.
+            stop_container(container_name)
+
+            try:
+                restored_container = _client.containers.get(old_container_name)
+                restored_container.rename(container_name)
+                restored_container.start()
+            except NotFound:
+                pass
+
+        raise
 
     #
     # Wait for the application to become healthy.
