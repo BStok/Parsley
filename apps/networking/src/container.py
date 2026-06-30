@@ -1,51 +1,87 @@
-# run a pushed Docker image on this server, and swap out old
+# container.py
+# run a pushed Docker image on the VPS via SSH, swap out old
 # versions of a deployment when redeploying
 
-import docker
-from docker.errors import NotFound
+import paramiko
+import os
 
 from apps.networking.src.health import wait_for_health
 
-_client = docker.from_env()
+
+def _get_ssh_client() -> paramiko.SSHClient:
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    host = os.getenv("VPS_HOST")
+    user = os.getenv("VPS_USER", "root")
+    key_path = os.getenv("VPS_SSH_KEY_PATH")
+    password = os.getenv("VPS_PASSWORD")
+
+    if key_path:
+        ssh.connect(hostname=host, username=user, key_filename=key_path)
+    else:
+        ssh.connect(hostname=host, username=user, password=password)
+
+    return ssh
+
+
+def _run_remote(client: paramiko.SSHClient, cmd: str, ignore_errors: bool = False) -> str:
+    stdin, stdout, stderr = client.exec_command(cmd)
+    exit_status = stdout.channel.recv_exit_status()
+    out = stdout.read().decode()
+    err = stderr.read().decode()
+
+    if exit_status != 0 and not ignore_errors:
+        raise RuntimeError(f"Remote command failed: {cmd}\n{err}")
+
+    return out.strip()
+
+
+def container_exists(client: paramiko.SSHClient, container_name: str) -> bool:
+    out = _run_remote(
+        client,
+        f"docker ps -a --filter name=^{container_name}$ --format '{{{{.Names}}}}'",
+        ignore_errors=True,
+    )
+    return container_name in out
 
 
 def run_container(
+    client: paramiko.SSHClient,
     image: str,
     container_name: str,
     port: int,
     env_vars: dict[str, str] | None = None,
 ) -> str:
     """
-    Pull an image and start it as a detached container.
-
+    Pull an image and start it as a detached container on the VPS.
     Returns the new container ID.
     """
-    _client.images.pull(image)
+    _run_remote(client, f"docker pull {image}")
 
-    container = _client.containers.run(
-        image=image,
-        name=container_name,
-        ports={f"{port}/tcp": port},
-        environment=env_vars or {},
-        detach=True,
-        restart_policy={"Name": "unless-stopped"},
+    env_flags = ""
+    if env_vars:
+        env_flags = " ".join(f'-e {k}="{v}"' for k, v in env_vars.items())
+
+    cmd = (
+        f"docker run -d --name {container_name} "
+        f"--network traefik-net --restart unless-stopped "
+        f"-p {port}:{port} {env_flags} {image}"
     )
 
-    return container.id
+    container_id = _run_remote(client, cmd)
+    return container_id
 
 
-def stop_container(container_name: str) -> None:
+def stop_container(client: paramiko.SSHClient, container_name: str) -> None:
     """
     Stop and remove a container if it exists.
     """
-
-    try:
-        container = _client.containers.get(container_name)
-    except NotFound:
+    if not container_exists(client, container_name):
         return
 
-    container.stop()
-    container.remove()
+    _run_remote(client, f"docker stop {container_name}", ignore_errors=True)
+    _run_remote(client, f"docker rm {container_name}", ignore_errors=True)
 
 
 def redeploy(
@@ -55,120 +91,81 @@ def redeploy(
     env_vars: dict[str, str] | None = None,
 ) -> str:
     """
-    Deploy a new container with automatic rollback.
-
-    Deployment process:
+    Deploy a new container on the VPS with automatic rollback.
 
     1. Remove any stale "<container_name>_old" container.
     2. Rename the currently running container to "<container_name>_old".
     3. Start the new container.
     4. Wait up to 10 seconds for a health check.
-    5. If healthy:
-           remove the old container.
-       Else:
-           remove the new container,
-           restore the previous container,
-           raise RuntimeError.
+    5. If healthy: remove the old container.
+       Else: remove the new container, restore the previous container, raise.
     """
 
-    old_container_name = f"{container_name}_old"
+    client = _get_ssh_client()
 
-    #
-    # Remove any leftover "_old" container.
-    #
     try:
-        stale = _client.containers.get(old_container_name)
+        old_container_name = f"{container_name}_old"
 
-        if stale.status == "running":
-            stale.stop()
+        # remove any leftover "_old" container
+        if container_exists(client, old_container_name):
+            _run_remote(client, f"docker stop {old_container_name}", ignore_errors=True)
+            _run_remote(client, f"docker rm {old_container_name}", ignore_errors=True)
 
-        stale.remove()
+        had_previous = container_exists(client, container_name)
 
-    except NotFound:
-        pass
+        # rename current deployment
+        if had_previous:
+            _run_remote(client, f"docker rename {container_name} {old_container_name}")
 
-    previous_container = None
+        # start the new deployment
+        new_container_id = run_container(
+            client=client,
+            image=image,
+            container_name=container_name,
+            port=port,
+            env_vars=env_vars,
+        )
 
-    #
-    # Rename the current deployment.
-    #
-    try:
-        previous_container = _client.containers.get(container_name)
-        previous_container.rename(old_container_name)
+        # wait for health check
+        healthy = wait_for_health(
+            host=os.getenv("VPS_HOST"),
+            port=port,
+            timeout=10,
+        )
 
-    except NotFound:
-        previous_container = None
+        if healthy:
+            if had_previous:
+                _run_remote(client, f"docker stop {old_container_name}", ignore_errors=True)
+                _run_remote(client, f"docker rm {old_container_name}", ignore_errors=True)
+            return new_container_id
 
-    #
-    # Start the new deployment.
-    #
-    new_container_id = run_container(
-        image=image,
-        container_name=container_name,
-        port=port,
-        env_vars=env_vars,
-    )
+        # health check failed — roll back
+        stop_container(client, container_name)
 
-    #
-    # Wait for the application to become healthy.
-    #
-    healthy = wait_for_health(
-        host="localhost",
-        port=port,
-        timeout=10,
-    )
+        if had_previous:
+            _run_remote(client, f"docker rename {old_container_name} {container_name}")
+            _run_remote(client, f"docker start {container_name}")
 
-    #
-    # Success.
-    #
-    if healthy:
+        raise RuntimeError("Deploy failed, rolled back to previous version")
 
-        if previous_container is not None:
-
-            previous_container.reload()
-
-            try:
-                previous_container.stop()
-            except Exception:
-                pass
-
-            try:
-                previous_container.remove()
-            except Exception:
-                pass
-
-        return new_container_id
-
-    #
-    # Health check failed.
-    # Roll back.
-    #
-    stop_container(container_name)
-
-    if previous_container is not None:
-
-        restored_container = _client.containers.get(old_container_name)
-
-        restored_container.rename(container_name)
-
-        restored_container.start()
-
-    raise RuntimeError(
-        "Deploy failed, rolled back to previous version"
-    )
+    finally:
+        client.close()
 
 
 def get_status(container_name: str) -> str | None:
     """
-    Return the Docker status of a container,
-    or None if it does not exist.
+    Return the Docker status of a container on the VPS, or None if it does not exist.
     """
-
+    client = _get_ssh_client()
     try:
-        container = _client.containers.get(container_name)
-    except NotFound:
-        return None
+        if not container_exists(client, container_name):
+            return None
 
-    container.reload()
-
-    return container.status
+        status = _run_remote(
+            client,
+            f"docker inspect -f '{{{{.State.Status}}}}' {container_name}",
+            ignore_errors=True,
+        )
+        return status or None
+    finally:
+        client.close()
