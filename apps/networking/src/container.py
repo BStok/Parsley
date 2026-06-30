@@ -118,13 +118,20 @@ def redeploy(
             _run_remote(client, f"docker rename {container_name} {old_container_name}")
 
         # start the new deployment
-        new_container_id = run_container(
-            client=client,
-            image=image,
-            container_name=container_name,
-            port=port,
-            env_vars=env_vars,
-        )
+        try:
+            new_container_id = run_container(
+                client=client,
+                image=image,
+                container_name=container_name,
+                port=port,
+                env_vars=env_vars,
+            )
+        except Exception:
+            # new container failed to even start — restore old immediately
+            if had_previous:
+                _run_remote(client, f"docker rename {old_container_name} {container_name}", ignore_errors=True)
+                _run_remote(client, f"docker start {container_name}", ignore_errors=True)
+            raise
 
         # wait for health check
         healthy = wait_for_health(
