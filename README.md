@@ -15,8 +15,8 @@ Paste a URL. Parsley clones the repository and reads the files to figure out the
 
 Push to `main` and the GitHub webhook triggers the same pipeline again. Also includes rollback mechanism to ensure the previous version keeps running in case the new build fails.
 
-**Live at** [home.parsley.website](https://home.parsley.website/) · Dashboard at [app.parsley.website](https://app.parsley.website/)
-
+- **Live at** [home.parsley.website](https://home.parsley.website/) · Dashboard at [app.parsley.website](https://app.parsley.website/)
+- [Demo](https://drive.google.com/file/d/1nW51zV1utEHlCzJxSNlWYj1qB-Yr3_HW/view?usp=sharing) video
 ---
 
 ## Architecture
